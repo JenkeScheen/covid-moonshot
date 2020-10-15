@@ -454,6 +454,354 @@ def normaliseDataset(path_to_raw_trainingset, path_to_save_loc, feature_type, ch
 	pickle.dump(pca, open(path_to_save_loc+"PICKLES/"+feature_type+"_pca.pkl","wb"))
 
 
+###################################################
+###################################################
+#################### LEARNERS #####################
+###################################################
+###################################################
+
+def importDataSet(training_label, path_to_trainingset, path_to_testset=None):
+	"""
+	Import a pre-processed training set (i.e. by hydra_preprocess) and 
+	return X and y.
+
+	--args
+	training_label (str): labels to train on; will be removed from test set
+	path_to_trainingset (str): path from which the processed training set (HDF5) can
+	be read. If no testset is specified, trainingset will be split into 80/20.
+	path_to_testset (str, optional): path from which processed testset (HDF5) can be read. 
+
+	--returns
+	X_train (pandas dataframe): dataframe containing features for training; 
+	contains perturbation names as index. 
+	y_train (pandas dataframe): dataframe containing labels for training; 
+	contains perturbation names as index. 
+
+	X_test (pandas dataframe): dataframe containing features for testing; 
+	contains perturbation names as index. 
+	y_test (pandas dataframe): dataframe containing labels for testing; 
+	contains perturbation names as index. 
+	"""
+	trainingset = pd.read_hdf(path_to_trainingset)
+
+	# for now, drop uncertainties from trainingset. Might use later for some probabilistic learning.
+	trainingset = trainingset.drop("unc", axis=1)
+
+	# now extract labels and return dataframes separately:
+	y_train = trainingset[[training_label]]
+	X_train = trainingset.drop([training_label], axis=1)
+
+
+	if path_to_testset:
+		# if external testset is specified, subtract X/y_test from it:
+		testset = pd.read_csv(path_to_testset, index_col=0)
+
+		y_test = testset[[training_label]]
+		X_test = testset.drop([training_label], axis=1)
+
+		return X_train, y_train, X_test, y_test
+
+
+	elif not path_to_testset:
+		# if not specified, make a 20% testset from trainingset:
+		X_train, X_test, y_train, y_test = train_test_split(X_train, y_train, 
+														test_size=0.2, 
+														random_state=42
+														)
+		return X_train, y_train, X_test, y_test
+
+
+def denseNN(X_train, y_train, X_test, y_test, feature_type):
+	"""
+	Given traininset and testsets and feature-type specification,
+	train a densely connected neural network.
+
+	--args
+	X_train (numpy 2D array): trainingset with features only of dim=(n,i)
+	y_train (numpy 2D array): trainingset with labels only of dim=(n,1)
+	X_test (numpy 2D array): testset with features only of dim=(n,i)
+	y_test (numpy 2D array): testset with labels only of dim=(n,1)
+
+	--returns
+	fitness (fn): function that contains training protocol
+	dimensions (list): list of variables referencing SKOPT hyperparameter ranges
+	n_calls (int): number of SKOPT hyperparameter optimisation repeats to run
+	default_parameters (list): list of floats/ints/str of initial values that fall in 
+							   the "dimensions" list hyperparameter ranges
+
+	"""
+
+	# clean slate stats output for convergence data:
+	stat_output_path = "output/"+feature_type+"_skopt_conv_data.csv"
+	if os.path.exists(stat_output_path):
+		open(stat_output_path).close()
+	stats_per_skopt_call = []
+
+	def create_model(
+		num_dense_layers_base, 
+		num_dense_nodes_base,
+		num_dense_layers_end, 
+		num_dense_nodes_end, 
+		learning_rate,
+		adam_b1,
+		adam_b2,
+		adam_eps,
+		num_batch_size):
+
+
+		model = keras.Sequential()
+
+	# Add input layer of length of the dataset columns:
+		model.add(keras.layers.Dense(len(X_train.columns), input_shape=[len(X_train.keys())]))
+
+	# Generate n number of hidden layers (base, i.e. first layers):
+		for i in range(num_dense_layers_base):
+			model.add(keras.layers.Dense(num_dense_nodes_base,
+			activation=keras.activations.relu
+			))
+
+	# Generate n number of hidden layers (end, i.e. last layers):
+		for i in range(num_dense_layers_end):
+			model.add(keras.layers.Dense(num_dense_nodes_end,
+			activation=keras.activations.relu
+			))
+
+	# Add output layer:
+
+		model.add(keras.layers.Dense(1, activation=keras.activations.linear))
+
+		optimizer = tf.keras.optimizers.Adam(lr=learning_rate, beta_1=adam_b1, beta_2=adam_b2, epsilon=adam_eps)
+
+		model.compile(
+			loss="logcosh",
+			#loss="mae",
+			optimizer=optimizer,
+			metrics=["mean_absolute_error"]
+			)
+		return model
+
+
+	# Set hyperparameter ranges, append to list:
+	dim_num_dense_layers_base = Integer(low=1, high=2, name='num_dense_layers_base')
+	dim_num_dense_nodes_base = Categorical(categories=list(np.linspace(5,261, 10, dtype=int)), name='num_dense_nodes_base')
+	dim_num_dense_layers_end = Integer(low=1, high=2, name='num_dense_layers_end')
+	dim_num_dense_nodes_end = Categorical(categories=list(np.linspace(5,261, 10, dtype=int)), name='num_dense_nodes_end')
+
+
+	learning_rate = Categorical(categories=list(np.linspace(0.001,0.1,10)), name="learning_rate")
+	dim_adam_b1 = Categorical(categories=list(np.linspace(0.8,0.99,11)), name="adam_b1")
+	dim_adam_b2 = Categorical(categories=list(np.linspace(0.8,0.99,11)), name="adam_b2")
+	dim_adam_eps = Categorical(categories=list(np.linspace(0.0001, 0.5, 11)), name="adam_eps")
+	dim_num_batch_size = Categorical(categories=list(np.linspace(16, 30, 8, dtype=int)), name='num_batch_size')
+
+	dimensions = [
+				dim_num_dense_layers_base,
+				dim_num_dense_nodes_base,
+				dim_num_dense_layers_end,
+				dim_num_dense_nodes_end,
+				learning_rate,
+				dim_adam_b1,
+				dim_adam_b2,
+				dim_adam_eps,
+				dim_num_batch_size]	
+
+	@use_named_args(dimensions=dimensions)
+	def fitness(
+		num_dense_layers_base, 
+		num_dense_nodes_base, 
+		num_dense_layers_end, 
+		num_dense_nodes_end,
+		learning_rate,
+		adam_b1,
+		adam_b2,
+		adam_eps,
+		num_batch_size):
+		early_stopping = keras.callbacks.EarlyStopping(
+														monitor='val_loss', 
+														mode='min', 
+														patience=30,
+														verbose=0)
+	# Create the neural network with these hyper-parameters:
+		model = create_model(
+							num_dense_layers_base=num_dense_layers_base,
+							num_dense_nodes_base=num_dense_nodes_base,
+							num_dense_layers_end=num_dense_layers_end,
+							num_dense_nodes_end=num_dense_nodes_end,
+							learning_rate=learning_rate,
+							adam_b1=adam_b1,
+							adam_b2=adam_b2,
+							adam_eps=adam_eps,
+							num_batch_size=num_batch_size)
+
+
+
+		history = model.fit(
+			X_train, y_train,
+		epochs=500, 
+		validation_split=0.1,
+		verbose=0,
+		callbacks=[
+					early_stopping, 
+					#PrintDot(),			# uncomment for verbosity on epochs
+					], 		
+		batch_size=num_batch_size)
+
+		hist = pd.DataFrame(history.history)
+		hist['epoch'] = history.epoch
+		val_loss = hist["val_loss"].tail(5).mean()
+
+		#################
+		# calculate some statistics on test set:
+		perts_list = y_test.index.tolist()
+		prediction = model.predict(X_test)
+
+		prediction_1_list = [ item[0] for item in prediction ]
+		exp_1_list = y_test.iloc[:,0].values.tolist()
+
+		# in case of multitask:
+		#prediction_2_list = [ item[1] for item in prediction ]
+		#exp_2_list = y_test.iloc[:,1].values.tolist()
+
+
+		# For plotting test set correlations:
+		tuples_result = list(zip(perts_list, exp_1_list, prediction_1_list))
+		nested_list_result = [ list(elem) for elem in tuples_result ]
+		exp_vs_pred_ddGoffset_df = pd.DataFrame(nested_list_result, 
+										columns=["Perturbation", "Exp1", "Pred1"])
+
+		
+
+
+		###################
+		#DEFINE SKOPT COST FUNCTION HERE:
+
+
+		# compute r on test set:
+		test_r = abs(stats.pearsonr(exp_1_list, prediction_1_list)[0])
+
+		# append stats to skopt convergence data:
+		stats_per_skopt_call.append([val_loss, test_r])
+
+		# sometimes, r is nan or 0; adjust:
+		if not type(test_r) == np.float64 or test_r == 0:
+			test_r = 0.1
+
+		# SKOPT API is easier when minimizing a function, so return the inverse of r:
+		test_r_inverse = 1/test_r
+
+
+		# Append data with best performing model.
+		global startpoint_error
+
+		if test_r_inverse < startpoint_error:
+			
+			startpoint_error = test_r_inverse
+
+			# # write all model files:
+			model.save_weights("models/"+feature_type+"_HYDRA_weights.h5")
+			with open("models/"+feature_type+"_HYDRA_architecture.json", "w") as file:
+				file.write(model.to_json())
+
+			exp_vs_pred_ddGoffset_df.to_csv("output/"+feature_type+"_top_performer.csv")
+
+			# make a classic loss plot and save:
+			plt.figure()
+			plt.plot(hist['epoch'], hist['loss'], "darkorange", label="Training loss")
+			plt.plot(hist['epoch'], hist['val_loss'], "royalblue", label="Validation loss")
+			plt.xlabel("Epoch")
+			plt.ylabel("Loss / MAE on OS")
+			plt.ylim(0, 0.002)
+			plt.legend()
+			plt.savefig("output/"+feature_type+"_top_performer_loss_plot.png", dpi=300)
+
+		
+		del model
+		tf.keras.backend.clear_session()
+		K.clear_session()		
+		
+		return test_r_inverse
+
+	# Bayesian Optimisation to search through hyperparameter space. 
+	# Prior parameters were found by manual search and preliminary optimisation loops. 
+	default_parameters = [
+							2, 			# first half n connected layers
+							33, 		# n neurons in first half connected layers
+							1, 			# second half n connected layers
+							90, 		# n neurons in second half connected layers
+							0.1,		# learning rate
+							0.971, 		# adam beta1
+							0.895, 		# adam beta2
+							1.0000e-04, # adam epsilon
+							20			# batch size
+							]
+	return fitness, dimensions, default_parameters
+
+
+def trainCorrector(fitness, dimensions, n_calls, default_parameters):
+	"""
+	Train a ML model by calling supporting functions. In jupyter NB, this
+	function outputs the progress bar based on 
+	https://github.com/scikit-optimize/scikit-optimize/issues/674
+
+	--args
+	fitness (fn): function that contains training protocol
+	dimensions (list): list of variables referencing SKOPT hyperparameter ranges
+	n_calls (int): number of SKOPT hyperparameter optimisation repeats to run
+	default_parameters (list): list of floats/ints/str of initial values that fall in 
+							   the "dimensions" list hyperparameter ranges
+	model_type (str): type of ML function to run
+
+	--returns
+	search_result (object): SKOPT class that offers some functionalities.
+
+	"""
+
+	# make a quick progress bar class:
+	class tqdm_skopt(object):
+	    def __init__(self, **kwargs):
+	        self._bar = tqdm(**kwargs)
+	        
+	    def __call__(self, res):
+	        self._bar.update()
+
+	# run the SKOPT optimiser:
+	search_result = gp_minimize(func=fitness,
+						dimensions=dimensions,
+						acq_func='EI', #Expected Improvement.
+						n_calls=n_calls,
+						x0=default_parameters,
+						callback=[tqdm_skopt(total=n_calls, desc="Training")])
+
+	# should we note down optimal hyperparams anywhere?
+
+
+
+
+	#### DO THIS NEXT::::
+	# should append this with the previous training function so we can generate hyperparam convergence
+
+	# with open(stat_output_path, "w") as filepath:
+	# 	writer = csv.writer(filepath)
+	# 	for stats_row in stats_per_skopt_call:
+	# 		writer.writerow(stats_row)
+	# 	writer.writerow(search_result.x)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
 	perturbation_paths = [
@@ -463,8 +811,10 @@ if __name__ == "__main__":
 	#computeLigMolProps("./input/ligands/")
 	#computePertMolProps(perturbation_paths=perturbation_paths)
 
+	#### don't use this, instead manually form labels.csv:
 	# with open("labels/mbar_labels.txt", "w") as file:
 	# 	writer = csv.writer(file)
+
 	# 	for path in tqdm(perturbation_paths):
 	# 		overlap_matrix, OS, MBAR_freenrg, MBAR_error = retrieveMBAROutput(path+"/free/freenrg-MBAR.dat", verbose=False)
 	# 		pert_name = path.replace("input/input_data", "")
@@ -476,16 +826,29 @@ if __name__ == "__main__":
 	# 	"trainingsets/MOLPROPS_trainingset.h5", 
 	# 	)
 
-	normaliseDataset(
-					path_to_raw_trainingset="trainingsets/MOLPROPS_trainingset.h5",
-					path_to_save_loc="trainingsets_prepared/",
-					feature_type="MOLPROPS", 
-					chunksize=6000)
+	# normaliseDataset(
+	# 				path_to_raw_trainingset="trainingsets/MOLPROPS_trainingset.h5",
+	# 				path_to_save_loc="trainingsets_prepared/",
+	# 				feature_type="MOLPROPS", 
+	# 				chunksize=6000)
 
 
+	X_train, y_train, X_test, y_test = importDataSet(
+						"ddGoffset", 
+						"trainingsets_prepared/MOLPROPS/data.h5")
 
 
+	startpoint_error = np.inf
+	fitness, dimensions, default_parameters = denseNN(
+											X_train, 
+											y_train, 
+											X_test, 
+											y_test, 
+											"MOLPROPS")
 
+	trainCorrector(fitness, dimensions, 11, default_parameters)
+
+	# if so, can we make the progress bar in jupyter?
 
 
 

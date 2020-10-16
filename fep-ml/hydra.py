@@ -39,6 +39,7 @@ import csv
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 from sklearn import preprocessing, decomposition
 from sklearn.model_selection import train_test_split
@@ -46,6 +47,9 @@ from scipy import stats
 from tqdm import tqdm
 import glob
 import pickle
+
+# global startpoint for SKOPT optimisation:
+startpoint_error = np.inf
 
 ###################################################
 ###################################################
@@ -344,13 +348,13 @@ def normaliseDataset(path_to_raw_trainingset, path_to_save_loc, feature_type, ch
 
 	if feature_type == "1DCNN": # all parameters here were found manually:
 		n_components = 200
-		print("This function takes ~10s to complete on 15K datapoints.\n")
+		# print("This function takes ~10s to complete on 15K datapoints.\n")
 	elif feature_type == "MOLPROPS":
 		n_components = 750
-		print("This function takes ~10m to complete on 15K datapoints.\n")
+		# print("This function takes ~10m to complete on 15K datapoints.\n")
 	elif feature_type == "PFP":
 		n_components = 200
-		print("This function takes ~10s to complete on 15K datapoints.\n")
+		# print("This function takes ~10s to complete on 15K datapoints.\n")
 
 	pca = decomposition.IncrementalPCA(n_components=n_components)
 	
@@ -689,6 +693,8 @@ def denseNN(X_train, y_train, X_test, y_test, feature_type):
 		# SKOPT API is easier when minimizing a function, so return the inverse of r:
 		test_r_inverse = 1/test_r
 
+		###################
+
 
 		# Append data with best performing model.
 		global startpoint_error
@@ -709,8 +715,10 @@ def denseNN(X_train, y_train, X_test, y_test, feature_type):
 			plt.plot(hist['epoch'], hist['loss'], "darkorange", label="Training loss")
 			plt.plot(hist['epoch'], hist['val_loss'], "royalblue", label="Validation loss")
 			plt.xlabel("Epoch")
-			plt.ylabel("Loss / MAE on OS")
-			plt.ylim(0, 0.002)
+			plt.ylabel("Loss")
+			date = datetime.now().strftime("%d/%m/%Y")
+			plt.title("Top performer DNN loss: "+date)
+			#plt.ylim(0, 0.002)
 			plt.legend()
 			plt.savefig("output/"+feature_type+"_top_performer_loss_plot.png", dpi=300)
 
@@ -751,10 +759,12 @@ def trainCorrector(fitness, dimensions, n_calls, default_parameters):
 							   the "dimensions" list hyperparameter ranges
 	model_type (str): type of ML function to run
 
+
 	--returns
 	search_result (object): SKOPT class that offers some functionalities.
 
 	"""
+	
 
 	# make a quick progress bar class:
 	class tqdm_skopt(object):
